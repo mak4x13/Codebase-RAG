@@ -1,0 +1,8 @@
+gradio
+gitpython
+sentence-transformers
+faiss-cpu
+numpy
+groq
+python-dotenv
+tqdm

@@ -1,0 +1,31 @@
+import numpy as np
+from app.embeddings.embedder import CodeEmbedder
+from app.vectorstore.faiss_store import FaissStore
+
+class Retriever:
+    def __init__(self, repo_id: str, top_k: int = 6):
+        self.repo_id = repo_id
+        self.top_k = top_k
+        self.embedder = CodeEmbedder()
+        self.store = FaissStore(repo_id)
+        self.store.load()
+
+    def retrieve(self, query: str):
+        """
+        Returns top-K relevant chunks for a query.
+        """
+        query_embedding = self.embedder.model.encode(
+            [query],
+            normalize_embeddings=True
+        )
+
+        scores, indices = self.store.index.search(
+            np.array(query_embedding), self.top_k
+        )
+
+        results = []
+        for idx in indices[0]:
+            if idx < len(self.store.metadata):
+                results.append(self.store.metadata[idx])
+
+        return results
