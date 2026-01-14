@@ -18,3 +18,4 @@ data/faiss_index/
 # OS
 .DS_Store
 Thumbs.db
+Dockerfile

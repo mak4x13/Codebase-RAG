@@ -1,8 +1,11 @@
-gradio
-gitpython
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.1.2+cpu
 sentence-transformers
 faiss-cpu
-numpy
+gradio
+gitpython
 groq
+numpy
+requests
 python-dotenv
-tqdm
