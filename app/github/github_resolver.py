@@ -10,12 +10,13 @@ class GitHubResolverError(Exception):
 
 def _headers():
     token = os.getenv("GITHUB_TOKEN")
-    if not token:
-        raise GitHubResolverError("GitHub token not found in environment.")
-    return {
+    headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json"
     }
+    if not token:
+        headers.pop("Authorization", None)
+    return headers
 
 
 def resolve_github_url(url: str) -> list[dict]:

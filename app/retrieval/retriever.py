@@ -8,12 +8,18 @@ class Retriever:
         self.top_k = top_k
         self.embedder = CodeEmbedder()
         self.store = FaissStore(repo_id)
-        self.store.load()
+        if FaissStore.exists(repo_id):
+            self.store.load()
+        else:
+            self.store.index = None
+            self.store.metadata = []
 
     def retrieve(self, query: str):
         """
         Returns top-K relevant chunks for a query.
         """
+        if self.store.index is None:
+            return []
         query_embedding = self.embedder.model.encode(
             [query],
             normalize_embeddings=True

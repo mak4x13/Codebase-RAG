@@ -1,8 +1,11 @@
-from pathlib import Path
-from typing import List, Dict
+import re
+from typing import Dict, List
 
 CHUNK_SIZE = 50     # max lines per chunk
 CHUNK_OVERLAP = 10  # lines overlap between chunks
+MIN_CHUNK_LINES = 10
+
+BOUNDARY_PATTERN = re.compile(r"^\s*(def|class|function|interface|struct|enum)\s+\w+")
 
 
 def read_text_file(file_path: str):
@@ -25,12 +28,21 @@ def chunk_file(file_path: str) -> List[Dict]:
     chunks = []
     lines = read_text_file(file_path)
     if not lines:
-        print(f"⚠️ Skipped unreadable file: {file_path}")
+        print(f"Skipped unreadable file: {file_path}")
         return []
 
     start = 0
     while start < len(lines):
         end = min(start + CHUNK_SIZE, len(lines))
+        if end < len(lines):
+            # Try to end chunk at the last boundary inside the window.
+            candidate = None
+            for i in range(start + 1, end):
+                if BOUNDARY_PATTERN.match(lines[i]):
+                    candidate = i
+            if candidate is not None and (candidate - start) >= MIN_CHUNK_LINES:
+                end = candidate
+
         content = "".join(lines[start:end])
         chunks.append({
             "file_path": str(file_path),
@@ -38,6 +50,9 @@ def chunk_file(file_path: str) -> List[Dict]:
             "end_line": end,
             "content": content
         })
-        start += CHUNK_SIZE - CHUNK_OVERLAP  # move forward with overlap
+
+        if end >= len(lines):
+            break
+        start = max(end - CHUNK_OVERLAP, start + 1)  # move forward with overlap
 
     return chunks

@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 
 SUPPORTED_EXTENSIONS = {
-    ".py", ".js", ".ts", ".java", ".cpp", ".c", ".go", ".rs",
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".cpp", ".c", ".go", ".rs",
+    ".rb", ".cs", ".kt", ".swift", ".scala",
     ".md", ".txt",
     ".json", ".yaml", ".yml", ".toml",
     ".asm"
