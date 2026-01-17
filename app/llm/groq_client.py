@@ -34,9 +34,24 @@ class GroqLLM:
                 top_p=top_p
             )
             return response.choices[0].message.content
-        except Exception:
-            # fallback to smaller model
+        except Exception as e:
+            message = str(e).lower()
             fallback = "llama-3.1-8b-instant"
+            if ("rate limit" in message or "429" in message) and model != fallback:
+                try:
+                    response = self.client.chat.completions.create(
+                        model=fallback,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        temperature=temperature,
+                        top_p=top_p
+                    )
+                    return response.choices[0].message.content
+                except Exception:
+                    return "The API rate limit was reached. Please wait and try again."
+            # fallback to smaller model
             response = self.client.chat.completions.create(
                 model=fallback,
                 messages=[

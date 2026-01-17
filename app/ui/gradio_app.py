@@ -113,7 +113,7 @@ def _find_file_chunks(repo_id: str, filename: str) -> list[dict]:
         path = c.get("file_path", "").replace("\\", "/")
         if path.endswith(filename):
             candidates.append(c)
-    return candidates
+    return candidates[:8]
 
 
 def _find_entry_point_chunks(repo_id: str) -> list[dict]:
@@ -136,24 +136,38 @@ def _find_entry_point_chunks(repo_id: str) -> list[dict]:
         path = c.get("file_path", "").replace("\\", "/")
         if any(path.endswith(p) for p in entry_files):
             candidates.append(c)
-    return candidates
+    return candidates[:8]
 
 
-def _build_context_blocks(chunks: list[dict], max_chars: int) -> list[str]:
+def _estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
+def _max_context_tokens(model_name: str, doc_request: bool) -> int:
+    model = (model_name or "").lower()
+    if "8b" in model:
+        return 3000 if doc_request else 2200
+    return 6000 if doc_request else 4000
+
+
+def _build_context_blocks(chunks: list[dict], max_tokens: int) -> list[str]:
     blocks = []
     used = 0
     for c in chunks:
         header = f"\nRepo: {c.get('repo_name', 'unknown')}\nFile: {c['file_path']}\nLines: {c['start_line']}-{c['end_line']}\nCode:\n"
-        available = max_chars - used - len(header)
-        if available <= 0:
+        header_tokens = _estimate_tokens(header)
+        if used + header_tokens >= max_tokens:
             break
         content = c["content"]
-        if len(content) > available:
-            content = content[:max(0, available - 4)] + "..."
+        content_tokens = _estimate_tokens(content)
+        available_tokens = max_tokens - used - header_tokens
+        if content_tokens > available_tokens:
+            available_chars = max(0, available_tokens * 4 - 3)
+            content = content[:available_chars] + "..."
         block = header + content + "\n"
         blocks.append(block)
-        used += len(block)
-        if used >= max_chars:
+        used += _estimate_tokens(block)
+        if used >= max_tokens:
             break
     return blocks
 
@@ -242,6 +256,10 @@ def index_repository(repo_url, state):
 
 def answer_question(question, model_name, temperature, top_p, chat_history, state):
     # Prevent NoneType errors
+    if not question or not question.strip():
+        return "", chat_history
+    if chat_history is None:
+        chat_history = []
     if not state.repo_id:
         chat_history.append((question, "Please index a repository first."))
         yield "", chat_history
@@ -318,8 +336,8 @@ def answer_question(question, model_name, temperature, top_p, chat_history, stat
 
     retrieved_chunks = repo_map_chunks + symbol_map_chunks + repo_chunks + metadata_chunks
 
-    max_context_chars = 12000 if doc_request else 8000
-    context_blocks = _build_context_blocks(retrieved_chunks, max_context_chars)
+    max_context_tokens = _max_context_tokens(model_name, doc_request)
+    context_blocks = _build_context_blocks(retrieved_chunks, max_context_tokens)
 
     user_prompt = f"""
 Repository code context:
@@ -394,7 +412,7 @@ def launch_ui():
                 placeholder="https://github.com/username OR /repo",
                 scale=6
             )
-            repo_submit = gr.Button("Index", variant="primary", scale=1)
+            repo_submit = gr.Button("Index", variant="primary", scale=1, interactive=False)
             index_status = gr.Textbox(label="Indexing Status", scale=3)
 
         # --- Model settings (below repo input) ---
@@ -445,6 +463,11 @@ def launch_ui():
             outputs=[index_status, index_ok],
             api_name=False
         )
+        repo_input.change(
+            lambda q: gr.update(interactive=bool(q and q.strip())),
+            inputs=[repo_input],
+            outputs=[repo_submit]
+        )
         index_ok.change(
             lambda ok: (gr.update(interactive=ok), gr.update(interactive=ok)),
             inputs=index_ok,
@@ -476,6 +499,12 @@ def launch_ui():
             ],
             outputs=[question_input, chatbot],
             api_name=False
+        )
+
+        question_input.change(
+            lambda q, ok: gr.update(interactive=bool(q and q.strip()) and ok),
+            inputs=[question_input, index_ok],
+            outputs=[question_submit]
         )
 
         demo.unload(on_exit)

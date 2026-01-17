@@ -20,6 +20,7 @@ STRICT RULES:
 - Use metadata chunks labeled as *_metadata to answer questions about profiles, such as listing all repositories. 
   Always consult these chunks if the user asks about the profile or repositories and try to answer within the range of question.
  - If the user asks for documentation or a repository overview, use any repo_map chunks plus code snippets to produce a best-effort summary without adding outside knowledge.
+- If the user asks whether code is "correct", do not speculate; only point to issues explicitly visible in the snippets and say correctness can't be guaranteed without expected behavior.
 
 CITATION RULES (MANDATORY):
 - Every factual claim MUST be followed by a citation if user prompt is not generic.
