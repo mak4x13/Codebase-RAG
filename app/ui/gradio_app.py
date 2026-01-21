@@ -93,6 +93,23 @@ def _extract_filename(question: str):
     return None
 
 
+def _extract_symbol_name(question: str):
+    import re
+    match = re.search(r"`([A-Za-z_]\w*)`", question)
+    if match:
+        return match.group(1)
+    for pattern in (
+        r"\bfunction\s+([A-Za-z_]\w*)",
+        r"\bclass\s+([A-Za-z_]\w*)",
+        r"\bmethod\s+([A-Za-z_]\w*)",
+        r"\bdef\s+([A-Za-z_]\w*)",
+    ):
+        match = re.search(pattern, question, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
 def _is_entry_point_request(question: str) -> bool:
     q = question.strip().lower()
     return any(
@@ -114,6 +131,17 @@ def _find_file_chunks(repo_id: str, filename: str) -> list[dict]:
         if path.endswith(filename):
             candidates.append(c)
     return candidates[:8]
+
+
+def _find_chunks_by_paths(repo_id: str, paths: list[str]) -> list[dict]:
+    if not paths:
+        return []
+    candidates = []
+    for c in FaissStore.load_metadata(repo_id):
+        path = c.get("file_path", "").replace("\\", "/")
+        if any(path.endswith(p) for p in paths):
+            candidates.append(c)
+    return candidates[:10]
 
 
 def _find_entry_point_chunks(repo_id: str) -> list[dict]:
@@ -139,6 +167,33 @@ def _find_entry_point_chunks(repo_id: str) -> list[dict]:
     return candidates[:8]
 
 
+def _find_similar_files(repo_id: str, filename: str) -> list[str]:
+    base = filename.split("/")[-1]
+    matches = []
+    for c in FaissStore.load_metadata(repo_id):
+        path = c.get("file_path", "").replace("\\", "/")
+        if base and base in path:
+            matches.append(path)
+    return matches[:5]
+
+
+def _find_symbol_files(repo_id: str, symbol: str) -> list[str]:
+    files = []
+    for c in FaissStore.load_metadata(repo_id):
+        if c.get("chunk_type") != "symbol_map":
+            continue
+        for line in c.get("content", "").splitlines():
+            if not line.startswith("- "):
+                continue
+            if ":" not in line:
+                continue
+            path, symbols = line[2:].split(":", 1)
+            symbol_list = [s.strip() for s in symbols.split(",")]
+            if symbol in symbol_list:
+                files.append(path.strip())
+    return list(dict.fromkeys(files))[:3]
+
+
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
@@ -146,8 +201,8 @@ def _estimate_tokens(text: str) -> int:
 def _max_context_tokens(model_name: str, doc_request: bool) -> int:
     model = (model_name or "").lower()
     if "8b" in model:
-        return 3000 if doc_request else 2200
-    return 6000 if doc_request else 4000
+        return 2000 if doc_request else 1500
+    return 3500 if doc_request else 2500
 
 
 def _build_context_blocks(chunks: list[dict], max_tokens: int) -> list[str]:
@@ -280,6 +335,7 @@ def answer_question(question, model_name, temperature, top_p, chat_history, stat
 
     doc_request = _is_doc_request(question)
     filename = _extract_filename(question)
+    symbol_name = _extract_symbol_name(question)
     entry_request = _is_entry_point_request(question)
     doc_top_k = 12 if doc_request else TOP_K
 
@@ -314,6 +370,21 @@ def answer_question(question, model_name, temperature, top_p, chat_history, stat
     repo_chunks = []
     if filename:
         repo_chunks = _find_file_chunks(target_repo_id, filename)
+        if not repo_chunks:
+            suggestions = _find_similar_files(target_repo_id, filename)
+            hint = ""
+            if suggestions:
+                hint = "\nSimilar files:\n- " + "\n- ".join(suggestions)
+            chat_history[-1] = (question, f"File '{filename}' was not found in the indexed repo.{hint}")
+            yield "", chat_history
+            return
+    elif symbol_name:
+        symbol_files = _find_symbol_files(target_repo_id, symbol_name)
+        repo_chunks = _find_chunks_by_paths(target_repo_id, symbol_files)
+        if not repo_chunks:
+            chat_history[-1] = (question, f"I could not find '{symbol_name}' in the indexed code. Please specify a file.")
+            yield "", chat_history
+            return
     elif entry_request:
         repo_chunks = _find_entry_point_chunks(target_repo_id)
     if not repo_chunks:
@@ -334,19 +405,24 @@ def answer_question(question, model_name, temperature, top_p, chat_history, stat
     if state.profile_metadata_id and FaissStore.exists(state.profile_metadata_id):
         metadata_chunks = Retriever(repo_id=state.profile_metadata_id, top_k=TOP_K).retrieve(question)
 
-    retrieved_chunks = repo_map_chunks + symbol_map_chunks + repo_chunks + metadata_chunks
+    if filename or symbol_name:
+        retrieved_chunks = repo_chunks + metadata_chunks
+    elif entry_request:
+        retrieved_chunks = symbol_map_chunks + repo_chunks + metadata_chunks
+    else:
+        retrieved_chunks = repo_map_chunks + symbol_map_chunks + repo_chunks + metadata_chunks
+
+    if not repo_chunks:
+        chat_history[-1] = (question, "I could not find relevant code. Please specify a file or function name.")
+        yield "", chat_history
+        return
 
     max_context_tokens = _max_context_tokens(model_name, doc_request)
     context_blocks = _build_context_blocks(retrieved_chunks, max_context_tokens)
 
     user_prompt = f"""
-Repository code context:
+Context:
 {''.join(context_blocks)}
-Profile metadata:
-{''.join([c['content'] for c in retrieved_chunks if c.get('chunk_type') == 'metadata'])}
-
-Code context:
-{''.join([c['content'] for c in retrieved_chunks if c.get('chunk_type') != 'metadata'])}
 
 Question:
 {question}

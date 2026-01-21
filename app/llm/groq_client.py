@@ -37,28 +37,43 @@ class GroqLLM:
         except Exception as e:
             message = str(e).lower()
             fallback = "llama-3.1-8b-instant"
-            if ("rate limit" in message or "429" in message) and model != fallback:
-                try:
-                    response = self.client.chat.completions.create(
-                        model=fallback,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        temperature=temperature,
-                        top_p=top_p
-                    )
-                    return response.choices[0].message.content
-                except Exception:
-                    return "The API rate limit was reached. Please wait and try again."
-            # fallback to smaller model
-            response = self.client.chat.completions.create(
-                model=fallback,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=temperature,
-                top_p=top_p
+            is_rate_limited = any(
+                key in message for key in (
+                    "rate limit",
+                    "rate_limit_exceeded",
+                    "tokens per minute",
+                    "request too large",
+                    "413",
+                    "429",
+                )
             )
-            return response.choices[0].message.content
+            if is_rate_limited:
+                if model != fallback:
+                    try:
+                        response = self.client.chat.completions.create(
+                            model=fallback,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            temperature=temperature,
+                            top_p=top_p
+                        )
+                        return response.choices[0].message.content
+                    except Exception:
+                        return "The request was too large for the model. Please narrow the question or specify a file."
+                return "The request was too large for the model. Please narrow the question or specify a file."
+            # fallback to smaller model
+            try:
+                response = self.client.chat.completions.create(
+                    model=fallback,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=temperature,
+                    top_p=top_p
+                )
+                return response.choices[0].message.content
+            except Exception:
+                return "The model request failed. Please try again."
