@@ -84,7 +84,7 @@ def _is_doc_request(question: str) -> bool:
 def _extract_filename(question: str):
     import re
     match = re.search(
-        r"([A-Za-z0-9_\-./\\]+\\.(py|js|ts|tsx|jsx|java|go|rs|cpp|c|cs|rb|kt|swift|scala|md|json|yaml|yml|toml))",
+        r"([A-Za-z0-9_\-./\\]+\.(py|js|ts|tsx|jsx|java|go|rs|cpp|c|cs|rb|kt|swift|scala|md|json|yaml|yml|toml))",
         question,
         flags=re.IGNORECASE
     )

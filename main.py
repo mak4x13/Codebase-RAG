@@ -1,6 +1,6 @@
 import os
-import shutil
-import stat
+import shutil # copy files 
+import stat # to 
 from dotenv import load_dotenv
 from app.embeddings.embedder import CodeEmbedder
 

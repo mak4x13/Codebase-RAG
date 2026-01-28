@@ -13,6 +13,9 @@ BINARY_EXTENSIONS = {
     ".pdf", ".png", ".jpg", ".jpeg", ".exe", ".zip", ".bin", ".dll"
 }
 
+# Binary files: can’t be chunked, break embedding models, waste memory
+# They are skipped immediately.
+
 IGNORE_DIRS = {".git", "node_modules", "venv", "dist", "build"}
 
 def get_code_files(repo_path: str):

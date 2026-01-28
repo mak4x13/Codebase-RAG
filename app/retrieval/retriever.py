@@ -26,12 +26,16 @@ class Retriever:
         )
 
         scores, indices = self.store.index.search(
-            np.array(query_embedding), self.top_k
+            np.array(query_embedding), self.top_k 
+            # Returns similarity scores and their positions 
         )
 
         results = []
         for idx in indices[0]:
+            # Ensures the index exists
+            # Prevents “index out of range” errors
             if idx < len(self.store.metadata):
                 results.append(self.store.metadata[idx])
+                # Fetches the actual code chunk and adds it to results.
 
         return results

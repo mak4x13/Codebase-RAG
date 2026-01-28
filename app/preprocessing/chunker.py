@@ -6,7 +6,9 @@ CHUNK_OVERLAP = 10  # lines overlap between chunks
 MIN_CHUNK_LINES = 10
 
 BOUNDARY_PATTERN = re.compile(r"^\s*(def|class|function|interface|struct|enum)\s+\w+")
-
+# splits files into chunks 
+# respects functions and classes
+# keeps overlap so context survives
 
 def read_text_file(file_path: str):
     for enc in ("utf-8", "latin-1"):
