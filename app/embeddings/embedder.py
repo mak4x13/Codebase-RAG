@@ -5,7 +5,7 @@ _CACHED_MODEL = None
 
 
 class CodeEmbedder:
-    def __init__(self, model_name="BAAI/bge-code-v1"):
+    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
         global _CACHED_MODEL
         if _CACHED_MODEL is None:
             _CACHED_MODEL = SentenceTransformer(model_name)

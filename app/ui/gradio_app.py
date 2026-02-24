@@ -81,15 +81,56 @@ def _is_doc_request(question: str) -> bool:
     )
 
 
+def _is_summary_request(question: str) -> bool:
+    q = question.strip().lower()
+    if _is_doc_request(question):
+        return True
+    return any(
+        phrase in q for phrase in (
+            "summary",
+            "summarize",
+            "overview",
+            "explain",
+            "describe",
+            "documentation"
+        )
+    )
+
+
 def _extract_filename(question: str):
     import re
     match = re.search(
-        r"([A-Za-z0-9_\-./\\]+\.(py|js|ts|tsx|jsx|java|go|rs|cpp|c|cs|rb|kt|swift|scala|md|json|yaml|yml|toml))",
+        r"([A-Za-z0-9_\-./\\]+\.(py|js|ts|tsx|jsx|java|go|rs|cpp|c|cs|rb|kt|swift|scala|md|txt|json|yaml|yml|toml))",
         question,
         flags=re.IGNORECASE
     )
     if match:
         return match.group(1).replace("\\", "/")
+    return None
+
+
+def _guess_filename(question: str, repo_id: str):
+    import re
+    tokens = re.findall(r"[A-Za-z0-9_\-]+", question.lower())
+    stop = {
+        "file", "files", "code", "repo", "repository", "project", "app",
+        "in", "the", "this", "that", "where", "which", "what", "does", "do",
+        "about", "explain", "summary", "summarize", "overview"
+    }
+    tokens = [t for t in tokens if len(t) >= 4 and t not in stop]
+    if not tokens:
+        return None
+    candidates = []
+    for c in FaissStore.load_metadata(repo_id):
+        path = c.get("file_path", "").replace("\\", "/")
+        base = path.split("/")[-1].lower()
+        for t in tokens:
+            if t in base:
+                candidates.append(base)
+                break
+    candidates = list(dict.fromkeys(candidates))
+    if len(candidates) == 1:
+        return candidates[0]
     return None
 
 
@@ -133,6 +174,16 @@ def _find_file_chunks(repo_id: str, filename: str) -> list[dict]:
     return candidates[:8]
 
 
+def _find_all_file_chunks(repo_id: str, filename: str) -> list[dict]:
+    candidates = []
+    for c in FaissStore.load_metadata(repo_id):
+        path = c.get("file_path", "").replace("\\", "/")
+        if path.endswith(filename):
+            candidates.append(c)
+    candidates.sort(key=lambda c: c.get("start_line", 0))
+    return candidates
+
+
 def _find_chunks_by_paths(repo_id: str, paths: list[str]) -> list[dict]:
     if not paths:
         return []
@@ -146,17 +197,8 @@ def _find_chunks_by_paths(repo_id: str, paths: list[str]) -> list[dict]:
 
 def _find_entry_point_chunks(repo_id: str) -> list[dict]:
     entry_files = [
-        "main.py",
-        "app.py",
-        "__main__.py",
-        "index.js",
-        "server.js",
-        "app.js",
-        "main.ts",
-        "index.ts",
-        "main.go",
-        "cmd/main.go",
-        "src/main.rs",
+        "main.py", "app.py", "__main__.py", "index.js", "server.js", "app.js",
+        "main.ts", "index.ts", "main.go", "cmd/main.go", "src/main.rs",
         "Program.cs"
     ]
     candidates = []
@@ -225,6 +267,28 @@ def _build_context_blocks(chunks: list[dict], max_tokens: int) -> list[str]:
         if used >= max_tokens:
             break
     return blocks
+
+
+def _build_file_summary(chunks: list[dict], llm: GroqLLM, model_name: str) -> str:
+    if not chunks:
+        return "No indexable code was found for this file."
+    max_context_tokens = _max_context_tokens(model_name, doc_request=True)
+    context_blocks = _build_context_blocks(chunks, max_context_tokens)
+    user_prompt = f"""
+Summarize this file at a high level including its purpose, main components, and flow of control/data.
+Include: what it does, main components, and flow of control/data.
+Keep it concise and structured. Avoid line-by-line explanation.
+
+Code context:
+{''.join(context_blocks)}
+"""
+    return llm.generate(
+        system_prompt="You are a senior software engineer summarizing a single source file.",
+        user_prompt=user_prompt,
+        model=model_name,
+        temperature=0.2,
+        top_p=0.9
+    )
 
 
 def index_repository(repo_url, state):
@@ -338,15 +402,18 @@ def answer_question(question, model_name, temperature, top_p, chat_history, stat
     symbol_name = _extract_symbol_name(question)
     entry_request = _is_entry_point_request(question)
     doc_top_k = 12 if doc_request else TOP_K
+    summary_request = _is_summary_request(question)
 
     question_lower = question.strip().lower()
-    summarize_all = "summarize" in question_lower and (
+    summarize_all = summary_request and (
         "each repo" in question_lower
         or "each repository" in question_lower
         or "all repos" in question_lower
         or "all repositories" in question_lower
     )
-    summarize_one = "summarize" in question_lower and not summarize_all
+
+    if not filename:
+        filename = _guess_filename(question, target_repo_id)
 
     if summarize_all and state.repo_ids:
         summaries = []
@@ -364,6 +431,39 @@ def answer_question(question, model_name, temperature, top_p, chat_history, stat
 
         final_answer = "\n\n".join(summaries)
         chat_history[-1] = (question, final_answer)
+        yield "", chat_history
+        return
+
+    if filename:
+        file_chunks = _find_all_file_chunks(target_repo_id, filename)
+        if not file_chunks:
+            suggestions = _find_similar_files(target_repo_id, filename)
+            hint = ""
+            if suggestions:
+                hint = "\nSimilar files:\n- " + "\n- ".join(suggestions)
+            chat_history[-1] = (question, f"File '{filename}' was not found in the indexed repo.{hint}")
+            yield "", chat_history
+            return
+        llm = GroqLLM()
+        answer = _build_file_summary(
+            chunks=file_chunks,
+            llm=llm,
+            model_name=model_name
+        )
+        chat_history[-1] = (question, answer)
+        yield "", chat_history
+        return
+
+    if summary_request:
+        if target_repo_id not in state.repo_summaries:
+            llm = GroqLLM()
+            state.repo_summaries[target_repo_id] = _build_repo_summary(
+                repo_id=target_repo_id,
+                llm=llm,
+                model_name=model_name
+            )
+        answer = state.repo_summaries[target_repo_id]
+        chat_history[-1] = (question, answer)
         yield "", chat_history
         return
 
@@ -389,12 +489,10 @@ def answer_question(question, model_name, temperature, top_p, chat_history, stat
         repo_chunks = _find_entry_point_chunks(target_repo_id)
     if not repo_chunks:
         repo_chunks = Retriever(repo_id=target_repo_id, top_k=doc_top_k).retrieve(question)
-    repo_map_chunks = []
-    if doc_request:
-        repo_map_chunks = [
-            c for c in FaissStore.load_metadata(target_repo_id)
-            if c.get("chunk_type") == "repo_map"
-        ]
+    repo_map_chunks = [
+        c for c in FaissStore.load_metadata(target_repo_id)
+        if c.get("chunk_type") == "repo_map"
+    ]
     symbol_map_chunks = []
     if doc_request or entry_request:
         symbol_map_chunks = [
@@ -406,13 +504,13 @@ def answer_question(question, model_name, temperature, top_p, chat_history, stat
         metadata_chunks = Retriever(repo_id=state.profile_metadata_id, top_k=TOP_K).retrieve(question)
 
     if filename or symbol_name:
-        retrieved_chunks = repo_chunks + metadata_chunks
+        retrieved_chunks = repo_map_chunks + repo_chunks + metadata_chunks
     elif entry_request:
-        retrieved_chunks = symbol_map_chunks + repo_chunks + metadata_chunks
+        retrieved_chunks = repo_map_chunks + symbol_map_chunks + repo_chunks + metadata_chunks
     else:
         retrieved_chunks = repo_map_chunks + symbol_map_chunks + repo_chunks + metadata_chunks
 
-    if not repo_chunks:
+    if not repo_chunks and not repo_map_chunks:
         chat_history[-1] = (question, "I could not find relevant code. Please specify a file or function name.")
         yield "", chat_history
         return
@@ -431,24 +529,14 @@ Question:
     with open("app/prompts/system_prompt.txt", "r", encoding="utf-8") as f:
         system_prompt = f.read()
 
-    if summarize_one:
-        if target_repo_id not in state.repo_summaries:
-            llm = GroqLLM()
-            state.repo_summaries[target_repo_id] = _build_repo_summary(
-                repo_id=target_repo_id,
-                llm=llm,
-                model_name=model_name
-            )
-        answer = state.repo_summaries[target_repo_id]
-    else:
-        llm = GroqLLM()
-        answer = llm.generate(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model_name,
-            temperature=temperature,
-            top_p=top_p
-        )
+    llm = GroqLLM()
+    answer = llm.generate(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model=model_name,
+        temperature=temperature,
+        top_p=top_p
+    )
 
     chat_history[-1] = (question, answer)
     yield "", chat_history
